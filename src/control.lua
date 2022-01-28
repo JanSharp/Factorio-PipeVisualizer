@@ -9,7 +9,10 @@ local function init_player(player_index)
   --- @class PlayerTable
   global.players[player_index] = {
     enabled = false,
-    entity_objects = {},
+    --- @type table<uint, PipeConnectable>
+    pipe_connectable_lut = nil,
+    --- @type table<uint, table> -- TODO: class for the value
+    network_id_to_network_mapping = nil,
     --- @type Position?
     last_position = nil,
     rectangle = nil,
