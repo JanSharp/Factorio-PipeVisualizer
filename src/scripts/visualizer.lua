@@ -21,7 +21,8 @@ function visualizer.create(player, player_table)
     players = { player.index },
   })
   player_table.pipe_connectable_lut = {}
-  player_table.network_id_to_network_mapping = {}
+  player_table.network_id_redirect_mapping = {}
+  player_table.next_network_id = 0
 
   visualizer.update(player, player_table)
 end
@@ -180,7 +181,7 @@ function visualizer.update(player, player_table)
     end
   end
 
-  local network_id_redirect_mapping = player_table.network_id_to_network_mapping
+  local network_id_redirect_mapping = player_table.network_id_redirect_mapping
 
   local function get_network_id(id)
     local result
@@ -191,11 +192,12 @@ function visualizer.update(player, player_table)
     return result
   end
 
-  local next_network_id = 0
+  local next_network_id = player_table.next_network_id
   for _, pipe_connectable in pairs(new_connectables) do
     pipe_connectable.visited = true
     local unit_number = pipe_connectable.unit_number
     for i, fluidbox_neighbours in pairs(pipe_connectable.entity.neighbours) do
+      -- the current network id is either nil or not redirecting to another network
       local current_id
       for _, neighbour in pairs(fluidbox_neighbours) do
         local other_unit_number = neighbour.unit_number
@@ -208,8 +210,10 @@ function visualizer.update(player, player_table)
           if other_network_id then
             other_network_id = get_network_id(other_network_id)
             if current_id then
+              -- neither of these ids are redirecting anywhere allowing for true comparison of networks
               if other_network_id ~= current_id then
-                network_id_redirect_mapping[current_id] = other_network_id
+                -- have to redirect in this direction so that current_id isn't redirecting anywhere
+                network_id_redirect_mapping[other_network_id] = current_id
               end
             else
               current_id = other_network_id
@@ -224,8 +228,8 @@ function visualizer.update(player, player_table)
         end
       end
     end
-    ::continue::
   end
+  player_table.next_network_id = next_network_id
 
   local networks = {}
 
@@ -377,7 +381,8 @@ function visualizer.destroy(player_table)
   player_table.entity_objects = {}
   player_table.last_position = nil
   player_table.pipe_connectable_lut = nil
-  player_table.network_id_to_network_mapping = nil
+  player_table.network_id_redirect_mapping = nil
+  player_table.next_network_id = nil
 end
 
 return visualizer

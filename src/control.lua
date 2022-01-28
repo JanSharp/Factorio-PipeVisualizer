@@ -12,7 +12,9 @@ local function init_player(player_index)
     --- @type table<uint, PipeConnectable>
     pipe_connectable_lut = nil,
     --- @type table<uint, table> -- TODO: class for the value
-    network_id_to_network_mapping = nil,
+    network_id_redirect_mapping = nil,
+    --- @type uint?
+    next_network_id = nil,
     --- @type Position?
     last_position = nil,
     rectangle = nil,
