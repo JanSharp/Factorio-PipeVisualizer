@@ -23,6 +23,7 @@ function visualizer.create(player, player_table)
   player_table.pipe_connectable_lut = {}
   player_table.network_id_redirect_mapping = {}
   player_table.next_network_id = 0
+  player_table.networks = {}
 
   visualizer.update(player, player_table)
 end
@@ -105,6 +106,10 @@ function visualizer.update(player, player_table)
     table.insert(areas, overlay_area)
   end
 
+  if not areas[1] then
+    return
+  end
+
   player_table.last_position = player_position
 
   local get_color
@@ -112,12 +117,11 @@ function visualizer.update(player, player_table)
     local fluid_prototypes = game.fluid_prototypes
     local color_cache = {}
     local empty_color = { r = 0.3, g = 0.3, b = 0.3 }
-    --- @param fluid Fluid
-    function get_color(fluid)
-      if not fluid then
+    --- @param name string
+    function get_color(name)
+      if not name then
         return empty_color
       end
-      local name = fluid.name
       if color_cache[name] then
         return color_cache[name]
       end
@@ -131,6 +135,7 @@ function visualizer.update(player, player_table)
     end
   end
 
+  ---@type PipeConnectable[]
   local new_connectables = {}
   local pipe_connectable_lut = player_table.pipe_connectable_lut
   for _, tile_area in pairs(areas) do
@@ -146,12 +151,13 @@ function visualizer.update(player, player_table)
       --- @field position Position
       --- @field entity LuaEntity
       --- @field network_ids uint[]
-      --- @field neighbor_unit_number_to_fluid_box_index_lut table<uint, PipeConnectable>
+      --- @field neighbor_unit_number_to_fluid_box_index_lut table<uint, uint>
       --- @field visited boolean?
       --- @field fluidbox_count uint
       --- @field fluids Fluid[] @ empty fluid boxes are holes in the array
       --- @field fluidbox LuaFluidBox
-      --- @field rendering_ids uint[]
+      --- @field center_rendering_id uint
+      --- @field connection_rendering_ids table<uint, uint> @ neighbor unit_number => rendering id
 
       local fluidbox = entity.fluidbox
       local fluidbox_count = #fluidbox
@@ -173,7 +179,10 @@ function visualizer.update(player, player_table)
         fluids = fluids,
         fluidbox = fluidbox,
         rendering_ids = {},
+        connection_rendering_ids = {},
       }
+
+      -- TODO: if this is an underground make sure it's neighbors get added, and do so efficiently
 
       new_connectables[#new_connectables+1] = pipe_connectable
       pipe_connectable_lut[unit_number] = pipe_connectable
@@ -182,6 +191,9 @@ function visualizer.update(player, player_table)
   end
 
   local network_id_redirect_mapping = player_table.network_id_redirect_mapping
+  local new_root_ids = {}
+  local merged_networks = {}
+  local networks = player_table.networks
 
   local function get_network_id(id)
     local result
@@ -214,16 +226,22 @@ function visualizer.update(player, player_table)
               if other_network_id ~= current_id then
                 -- have to redirect in this direction so that current_id isn't redirecting anywhere
                 network_id_redirect_mapping[other_network_id] = current_id
+                new_root_ids[other_network_id] = nil
+                merged_networks[other_network_id] = networks[other_network_id] -- evals to nil if the network didn't exist before
               end
             else
               current_id = other_network_id
               pipe_connectable.network_ids[i] = current_id
             end
+          elseif current_id then
+            -- the other one is a single fluid box, not part of a network yet. can just give it the current_id
+            other.network_ids[other_fluid_box_index] = current_id
           else
             current_id = next_network_id
             next_network_id = next_network_id + 1
             pipe_connectable.network_ids[i] = current_id
             other.network_ids[other_fluid_box_index] = current_id
+            new_root_ids[current_id] = true
           end
         end
       end
@@ -231,142 +249,121 @@ function visualizer.update(player, player_table)
   end
   player_table.next_network_id = next_network_id
 
-  local networks = {}
-
-  for _, pipe_connectable in pairs(pipe_connectable_lut) do
-    for i = 1, pipe_connectable.fluidbox_count do
-      if pipe_connectable.network_ids[i] then
-        local id = get_network_id(pipe_connectable.network_ids[i])
-        if not networks[id] then
-          networks[id] = {id = id}
-        end
-        pipe_connectable.network_ids[i] = id
-      end
-    end
+  for id in pairs(new_root_ids) do
+    networks[id] = {
+      id = id,
+      fluids = {},
+    }
   end
 
+  -- TODO: change this loop to not loop over all pipe connectables, but only the new ones and needed ones (merged?). easier said than done
+  -- TODO: when merging, if the color of a network changed, update all existing rendering objects in that network.
   for _, pipe_connectable in pairs(pipe_connectable_lut) do
-    for i = 1, pipe_connectable.fluidbox_count do
-      local id = pipe_connectable.network_ids[i]
-      if id then
-        if pipe_connectable.fluids[i] then
-          networks[id].color = get_color(pipe_connectable.fluids[i])
+    -- network_ids can have holes
+    for i, initial_id in pairs(pipe_connectable.network_ids) do
+      local id = get_network_id(initial_id)
+      if new_root_ids[id] or id ~= initial_id then
+        pipe_connectable.network_ids[i] = id
+        local network = networks[id]
+        local old_network = merged_networks[initial_id]
+        if old_network then
+          for fluid_name in pairs(old_network.fluids) do
+            network.fluids[fluid_name] = true
+          end
+          merged_networks[initial_id] = nil
+          networks[initial_id] = nil
         else
-          local filter = pipe_connectable.fluidbox.get_filter(i)
-          if filter then
-            networks[id].color = get_color(filter)
+          local fluid = pipe_connectable.fluids[i]
+          if fluid then
+            network.fluids[fluid.name] = true
+          else
+            local filter = pipe_connectable.fluidbox.get_filter(i)
+            if filter then
+              network.fluids[filter.name] = filter.name
+            end
           end
         end
       end
     end
   end
 
-  for _, pipe_connectable in pairs(pipe_connectable_lut) do
-    pipe_connectable.network_rendering_ids = pipe_connectable.network_rendering_ids or {}
-    for i = 1, #pipe_connectable.entity.fluidbox do
-      if pipe_connectable.network_rendering_ids[i] then
-        rendering.destroy(pipe_connectable.network_rendering_ids[i])
-      end
-      if pipe_connectable.network_ids[i] then
-        pipe_connectable.network_rendering_ids[i] = rendering.draw_text({
-          text = tostring(pipe_connectable.network_ids[i]),
-          color = {1, 1, 1, 1},
-          target = pipe_connectable.entity,
-          target_offset = {x = 0, y = (i - 1) / 0.5},
-          surface = player_surface,
-          players = { player.index },
-          scale = 2,
-        })
-      end
-    end
-  end
+  assert(not next(merged_networks), "The previous loop should merge all merged networks into their redirected root network.")
+
+  -- for _, pipe_connectable in pairs(pipe_connectable_lut) do
+  --   pipe_connectable.network_rendering_ids = pipe_connectable.network_rendering_ids or {}
+  --   for i = 1, #pipe_connectable.entity.fluidbox do
+  --     if pipe_connectable.network_rendering_ids[i] then
+  --       rendering.destroy(pipe_connectable.network_rendering_ids[i])
+  --     end
+  --     if pipe_connectable.network_ids[i] then
+  --       pipe_connectable.network_rendering_ids[i] = rendering.draw_text({
+  --         text = tostring(pipe_connectable.network_ids[i]),
+  --         color = {1, 1, 1, 1},
+  --         target = pipe_connectable.entity,
+  --         target_offset = {x = 0, y = (i - 1) / 0.5},
+  --         surface = player_surface,
+  --         players = { player.index },
+  --         scale = 2,
+  --       })
+  --     end
+  --   end
+  -- end
 
   for _, pipe_connectable in pairs(new_connectables) do
-    for i = 1, #pipe_connectable.entity.fluidbox do
-      local id = pipe_connectable.network_ids[i]
-      if id then
-        for _, rendering_id in pairs(pipe_connectable.rendering_ids) do
-          rendering.destroy(rendering_id)
-        end
-        local color = networks[id].color or get_color()
-        local entity = pipe_connectable.entity
-        for _, fluidbox_neighbours in pairs(entity.neighbours) do
-          for _, neighbour in pairs(fluidbox_neighbours) do
-            local neighbour_position = neighbour.position
-            local is_pipe_entity = constants.search_types_lookup[neighbour.type]
-            local is_underground_connection = entity.type == "pipe-to-ground"
-              and neighbour.type == "pipe-to-ground"
-              and entity.direction == direction.opposite(neighbour.direction)
-              and entity.direction
-                == direction.opposite(direction.from_positions(entity.position, neighbour.position, true))
-            local is_southeast = neighbour_position.x > (entity.position.x + 0.99)
-              or neighbour_position.y > (entity.position.y + 0.99)
-
-            if
-              is_underground_connection
-              and not area.contains_position(overlay_area, neighbour_position)
-              and not is_southeast
-            then
-              -- table.insert(entities, neighbour)
-            elseif is_southeast or not is_pipe_entity then
-              local offset = { 0, 0 }
-              if is_underground_connection then
-                if entity.direction == defines.direction.north or entity.direction == defines.direction.south then
-                  offset = { 0, -0.25 }
-                else
-                  offset = { -0.25, 0 }
-                end
-              end
-              table.insert(
-                pipe_connectable.rendering_ids,
-                rendering.draw_line({
-                  color = color,
-                  width = 5,
-                  gap_length = is_underground_connection and 0.5 or 0,
-                  dash_length = is_underground_connection and 0.5 or 0,
-                  from = entity,
-                  from_offset = offset,
-                  to = neighbour,
-                  surface = neighbour.surface,
-                  players = { player.index },
-                })
-              )
-            end
-            if not is_pipe_entity then
-              table.insert(
-                pipe_connectable.rendering_ids,
-                rendering.draw_rectangle({
-                  left_top = neighbour,
-                  left_top_offset = { -0.2, -0.2 },
-                  right_bottom = neighbour,
-                  right_bottom_offset = { 0.2, 0.2 },
-                  color = color,
-                  filled = true,
-                  target = neighbour,
-                  surface = player_surface,
-                  players = { player.index },
-                })
-              )
-            end
-          end
-        end
-
-        table.insert(
-          pipe_connectable.rendering_ids,
-          rendering.draw_circle({
-            color = color,
-            radius = 0.2,
-            filled = true,
-            target = entity,
-            surface = player_surface,
-            players = { player.index },
-          })
-        )
+    local entity = pipe_connectable.entity
+    local unit_number = pipe_connectable.unit_number
+    for neighbour_unit_number, fluidbox_index in pairs(pipe_connectable.neighbor_unit_number_to_fluid_box_index_lut) do
+      local neighbor_connectable = pipe_connectable_lut[neighbour_unit_number]
+      if not neighbor_connectable
+        or neighbor_connectable.connection_rendering_ids[unit_number]
+      then
+        goto continue
       end
-    end
-  end
 
-  -- game.print(next_network_id)
+      local color = get_color(next(networks[pipe_connectable.network_ids[fluidbox_index]].fluids))
+      local neighbour = neighbor_connectable.entity
+
+      local is_underground_connection = entity.type == "pipe-to-ground"
+        and neighbour.type == "pipe-to-ground"
+        and entity.direction == direction.opposite(neighbour.direction)
+        and entity.direction
+          == direction.opposite(direction.from_positions(entity.position, neighbour.position, true))
+
+      local offset = { 0, 0 }
+      if is_underground_connection then
+        if entity.direction == defines.direction.north or entity.direction == defines.direction.south then
+          offset = { 0, -0.25 }
+        else
+          offset = { -0.25, 0 }
+        end
+      end
+      local rendering_id = rendering.draw_line({
+        color = color,
+        width = 5,
+        gap_length = is_underground_connection and 0.5 or 0,
+        dash_length = is_underground_connection and 0.5 or 0,
+        from = entity,
+        from_offset = offset,
+        to = neighbour,
+        surface = neighbour.surface,
+        players = { player.index },
+      })
+      -- don't even need to add it to the other one, because it will only check if this one has a rendering id
+      -- set already if it comes around to it, so no duplicate rendering objects
+      -- and only storing it in one location makes destroying them easier/faster
+      -- neighbor_connectable.connection_rendering_ids[pipe_connectable.unit_number] = rendering_id
+      pipe_connectable.connection_rendering_ids[neighbour_unit_number] = rendering_id
+      ::continue::
+    end
+    pipe_connectable.center_rendering_id = rendering.draw_circle({
+      color = get_color(pipe_connectable.network_ids[1] and next(networks[pipe_connectable.network_ids[1]].fluids)),
+      radius = 0.2,
+      filled = true,
+      target = entity,
+      surface = player_surface,
+      players = { player.index },
+    })
+  end
 end
 
 --- @param player_table PlayerTable
@@ -374,7 +371,10 @@ function visualizer.destroy(player_table)
   player_table.enabled = false
   rendering.destroy(player_table.rectangle)
   for _, pipe_connectable in pairs(player_table.pipe_connectable_lut) do
-    for _, id in pairs(pipe_connectable.rendering_ids) do
+    if pipe_connectable.center_rendering_id then
+      rendering.destroy(pipe_connectable.center_rendering_id)
+    end
+    for _, id in pairs(pipe_connectable.connection_rendering_ids) do
       rendering.destroy(id)
     end
   end
@@ -383,6 +383,7 @@ function visualizer.destroy(player_table)
   player_table.pipe_connectable_lut = nil
   player_table.network_id_redirect_mapping = nil
   player_table.next_network_id = nil
+  player_table.networks = nil
 end
 
 return visualizer
