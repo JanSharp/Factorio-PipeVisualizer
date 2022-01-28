@@ -253,41 +253,51 @@ function visualizer.update(player, player_table)
     networks[id] = {
       id = id,
       fluids = {},
+      connectables = {count = 0},
+      merged_connectables = {count = 0},
     }
   end
 
-  -- TODO: change this loop to not loop over all pipe connectables, but only the new ones and needed ones (merged?). easier said than done
-  -- TODO: when merging, if the color of a network changed, update all existing rendering objects in that network.
-  for _, pipe_connectable in pairs(pipe_connectable_lut) do
-    -- network_ids can have holes
-    for i, initial_id in pairs(pipe_connectable.network_ids) do
-      local id = get_network_id(initial_id)
-      if new_root_ids[id] or id ~= initial_id then
-        pipe_connectable.network_ids[i] = id
-        local network = networks[id]
-        local old_network = merged_networks[initial_id]
-        if old_network then
-          for fluid_name in pairs(old_network.fluids) do
-            network.fluids[fluid_name] = true
-          end
-          merged_networks[initial_id] = nil
-          networks[initial_id] = nil
-        else
-          local fluid = pipe_connectable.fluids[i]
-          if fluid then
-            network.fluids[fluid.name] = true
-          else
-            local filter = pipe_connectable.fluidbox.get_filter(i)
-            if filter then
-              network.fluids[filter.name] = filter.name
-            end
-          end
+  for _, pipe_connectable in pairs(new_connectables) do
+    for i, id in pairs(pipe_connectable.network_ids) do
+      id = get_network_id(id)
+      pipe_connectable.network_ids[i] = id
+      local network = networks[id]
+      do
+        local list = network.connectables
+        local c = list.count
+        c = c + 1
+        list[c] = pipe_connectable
+        list.count = c
+      end
+
+      local fluid = pipe_connectable.fluids[i]
+      if fluid then
+        network.fluids[fluid.name] = true
+      else
+        local filter = pipe_connectable.fluidbox.get_filter(i)
+        if filter then
+          network.fluids[filter.name] = true
         end
       end
     end
   end
 
-  assert(not next(merged_networks), "The previous loop should merge all merged networks into their redirected root network.")
+  -- TODO: when merging, if the color of a network changed, update all existing rendering objects in that network.
+  for merged_id, merged_network in pairs(merged_networks) do
+    local network = networks[get_network_id(merged_id)]
+    for fluid_name in pairs(merged_network.fluids) do
+      network.fluids[fluid_name] = true
+    end
+    networks[merged_id] = nil
+    do
+      local list = network.merged_connectables
+      local c = list.count
+      c = c + 1
+      list[c] = merged_network.connectables
+      list.count = c
+    end
+  end
 
   -- for _, pipe_connectable in pairs(pipe_connectable_lut) do
   --   pipe_connectable.network_rendering_ids = pipe_connectable.network_rendering_ids or {}
