@@ -154,7 +154,6 @@ function visualizer.update(player, player_table)
       --- @field neighbor_unit_number_to_fluid_box_index_lut table<uint, uint>
       --- @field visited boolean?
       --- @field fluidbox_count uint
-      --- @field fluids Fluid[] @ empty fluid boxes are holes in the array
       --- @field fluidbox LuaFluidBox
       --- @field center_rendering_id uint
       --- @field connection_rendering_ids table<uint, uint> @ neighbor unit_number => rendering id
@@ -164,10 +163,6 @@ function visualizer.update(player, player_table)
       if fluidbox_count == 0 then
         goto continue
       end
-      local fluids = {}
-      for i = 1, fluidbox_count do
-        fluids[i] = fluidbox[i]
-      end
 
       local pipe_connectable = {
         unit_number = unit_number,
@@ -176,7 +171,6 @@ function visualizer.update(player, player_table)
         network_ids = {},
         neighbor_unit_number_to_fluid_box_index_lut = {},
         fluidbox_count = fluidbox_count,
-        fluids = fluids,
         fluidbox = fluidbox,
         rendering_ids = {},
         connection_rendering_ids = {},
@@ -271,13 +265,15 @@ function visualizer.update(player, player_table)
         list.count = c
       end
 
-      local fluid = pipe_connectable.fluids[i]
-      if fluid then
-        network.fluids[fluid.name] = true
-      else
-        local filter = pipe_connectable.fluidbox.get_filter(i)
-        if filter then
-          network.fluids[filter.name] = true
+      if not next(network.fluids) then
+        local fluid = pipe_connectable.fluidbox[i]
+        if fluid then
+          network.fluids[fluid.name] = true
+        else
+          local filter = pipe_connectable.fluidbox.get_filter(i)
+          if filter then
+            network.fluids[filter.name] = true
+          end
         end
       end
     end
